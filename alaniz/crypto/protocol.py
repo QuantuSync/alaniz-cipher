@@ -42,8 +42,9 @@ class PublicParams:
     sigma: Sigma
 
     @classmethod
-    def generate(cls, sheaf: Sheaf, sigma_name: str = "inverse") -> PublicParams:
-        return cls(sheaf=sheaf, sigma=Sigma(sigma_name, sheaf.Fp))
+    def generate(cls, sheaf: Sheaf, sigma_name: str = "id_spn") -> PublicParams:
+        return cls(sheaf=sheaf,
+                   sigma=Sigma(sigma_name, sheaf.Fp, d=sheaf.dv))
 
 
 class Protocol:
