@@ -28,7 +28,7 @@ from alaniz.crypto.protocol import Protocol, PublicParams, KeyPair
 # FIXTURES
 # ============================================================
 
-def make_protocol(n_nodes=6, dv=2, p=17, sigma_name="inverse", seed=42):
+def make_protocol(n_nodes=6, dv=2, p=17, sigma_name="id_spn", seed=42):
     """Helper to build a protocol instance."""
     rng = random.Random(seed)
     Fp = FiniteField(p)
@@ -75,7 +75,7 @@ class TestRoundTrip:
 
     @pytest.mark.parametrize("p", [17, 23, 29, 47])
     def test_various_primes(self, p):
-        sigma = "inverse"
+        sigma = "id_spn"
         proto, key, rng = make_protocol(p=p, sigma_name=sigma)
         for _ in range(5):
             s = proto.sheaf.random_section(rng=rng)
@@ -103,7 +103,7 @@ class TestRoundTrip:
 class TestTopologies:
     """Round-trip works on various tree topologies."""
 
-    def _test_topology(self, graph, p=17, sigma="inverse", n_tests=5):
+    def _test_topology(self, graph, p=17, sigma="id_spn", n_tests=5):
         rng = random.Random(123)
         Fp = FiniteField(p)
         sheaf = Sheaf.random(graph, 2, Fp, rng=rng)
@@ -189,7 +189,7 @@ class TestCPAResistance:
         the key should be INCONSISTENT (because the true system
         has nonlinear terms from σ).
         """
-        proto, key, rng = make_protocol(n_nodes=6, p=17, sigma_name="inverse")
+        proto, key, rng = make_protocol(n_nodes=6, p=17, sigma_name="id_spn")
         Fp = proto.Fp
         dv = proto.dv
         v = 0  # attack node 0

@@ -34,7 +34,7 @@ def main():
     p = 17
     dv = 2
     n_nodes = 8
-    sigma_name = "inverse"
+    sigma_name = "id_spn"
     seed = 2024
 
     rng = random.Random(seed)

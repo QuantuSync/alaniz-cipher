@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "alaniz-cipher"
-version = "1.0.0"
+version = "2.0.0"
 description = "SHEC: Sheaf Homology Encryption Cipher — A cryptographic primitive based on nonlinear sheaf morphisms over graphs"
 readme = "README.md"
 license = {text = "MIT"}

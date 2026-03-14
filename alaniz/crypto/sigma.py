@@ -9,7 +9,8 @@ Supported maps:
              [DEPRECATED: vulnerable to scaling CPA attack]
   - cube:    σ(x)_i = x_i^3 (requires gcd(3, p-1) = 1)
              [DEPRECATED: vulnerable to scaling CPA attack]
-  - id_spn:  σ(y) = y + S(M·S(y)), S = cube, M = mixing matrix
+  - id_spn:  σ(y) = y + S(M·S(y) + c), S = cube, M = mixing matrix,
+             c = (1,...,1) constant vector
              [RECOMMENDED: resists scaling and interpolation attacks]
 
 Design rationale for id_spn:

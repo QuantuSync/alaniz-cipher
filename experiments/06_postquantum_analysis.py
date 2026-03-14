@@ -1,3 +1,8 @@
+# ⚠ V1 HISTORICAL: This experiment uses v1 sigmas (cube/inverse)
+# which are DEPRECATED and vulnerable to CPA attacks.
+# For v2 verification, see experiments/14_v2_redteam.py
+# These are preserved for reproducibility of the paper's design evolution.
+
 #!/usr/bin/env python3
 """
 Experiment 6: Post-Quantum Security Analysis
