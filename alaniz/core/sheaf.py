@@ -7,13 +7,16 @@ A sheaf F on graph G assigns:
 
 The 0-th cohomology H^0(G, F) = ker(δ^0) captures global sections:
 assignments of vectors to nodes consistent with all restriction maps.
+
+For v3, constructor `random_with_cohomology` samples ρ_e freely on a
+spanning tree and computes the remaining edges from the cycle constraints
+∏_{e ∈ γ} ρ_e^{±1} = I, ensuring dim H^0 = d_v even when β_1 >= 1.
 """
 
 from __future__ import annotations
 import numpy as np
 import random as _random
 from dataclasses import dataclass, field
-from typing import Optional
 
 from .field import FiniteField
 from .graph import Graph
@@ -28,7 +31,6 @@ class Sheaf:
     Fp: FiniteField
     rho: dict = field(default_factory=dict, repr=False)
 
-    # Computed attributes
     delta0: np.ndarray = field(default=None, repr=False)
     H0_basis: list = field(default_factory=list, repr=False)
 
@@ -38,25 +40,22 @@ class Sheaf:
 
     @property
     def C0_dim(self) -> int:
-        """Dimension of C^0 = ⊕_v F(v)."""
         return self.graph.n * self.dv
 
     @property
     def C1_dim(self) -> int:
-        """Dimension of C^1 = ⊕_e F(e)."""
         return self.graph.m * self.dv
 
     @classmethod
     def random(cls, graph: Graph, dv: int, Fp: FiniteField,
-               rng=None) -> Sheaf:
+               rng=None) -> "Sheaf":
         """
         Construct a sheaf with random invertible restriction maps.
 
-        Convention: for edge e=(u,v),
-          ρ_{u←e} = I  (identity)
-          ρ_{v←e} = R_e  (random GL matrix)
-
-        This ensures dim H^0 = dv for tree graphs.
+        For tree graphs: ensures dim H^0 = dv.
+        For graphs with β_1 >= 1: may yield dim H^0 < dv (generic restrictions
+        do not satisfy cycle constraints). Use `random_with_cohomology`
+        for graphs with cycles when dim H^0 = dv is required.
         """
         r = rng or _random
         sheaf = cls(graph=graph, dv=dv, Fp=Fp)
@@ -70,8 +69,79 @@ class Sheaf:
         sheaf._compute_H0()
         return sheaf
 
+    @classmethod
+    def random_with_cohomology(cls, graph: Graph, dv: int, Fp: FiniteField,
+                                root: int = 0, rng=None) -> "Sheaf":
+        """
+        Sample random restrictions satisfying cycle constraints.
+
+        Procedure:
+          1. Compute spanning tree T from `root`.
+          2. Sample ρ_e ∈ GL(d, F_p) uniformly for each tree edge.
+          3. For each non-tree edge e = (u, v): compute the propagated
+             restriction from u to v through T and set ρ_e to match,
+             ensuring ∏ ρ = I on the fundamental cycle through e.
+
+        Guarantees dim H^0 = dv regardless of β_1.
+        """
+        r = rng or _random
+        sheaf = cls(graph=graph, dv=dv, Fp=Fp)
+
+        tree_edges, non_tree_edges = graph.spanning_tree(root)
+        tree_set = set(tree_edges)
+
+        # Step 1: sample tree edges freely
+        for e in tree_edges:
+            u, v = e
+            sheaf.rho[(e, u)] = np.eye(dv, dtype=int)
+            sheaf.rho[(e, v)] = Fp.random_gl(dv, rng=r)
+
+        # Step 2: compute propagation matrices R[root -> v] on the tree
+        R_to = sheaf._compute_tree_propagation(tree_edges, root)
+
+        # Step 3: constrain non-tree edges
+        for e in non_tree_edges:
+            u, v = e
+            # A section s with s_root = x has s_u = R_to[u] x and s_v = R_to[v] x.
+            # Edge constraint: ρ_{v←e} s_v = ρ_{u←e} s_u for all x.
+            # With ρ_{u←e} = I: ρ_{v←e} R_to[v] = R_to[u]
+            #   => ρ_{v←e} = R_to[u] R_to[v]^{-1}
+            sheaf.rho[(e, u)] = np.eye(dv, dtype=int)
+            R_v_inv = Fp.mat_inv(R_to[v])
+            sheaf.rho[(e, v)] = Fp.mat_mul(R_to[u], R_v_inv)
+
+        sheaf._build_coboundary()
+        sheaf._compute_H0()
+        return sheaf
+
+    def _compute_tree_propagation(self, tree_edges: tuple,
+                                   root: int) -> dict:
+        """BFS on the spanning tree to compute R[root -> v] for all v."""
+        Fp = self.Fp
+        dv = self.dv
+        adj = {v: [] for v in self.graph.nodes}
+        for u, v in tree_edges:
+            adj[u].append(v)
+            adj[v].append(u)
+        R_to = {root: np.eye(dv, dtype=int)}
+        visited = {root}
+        queue = [root]
+        while queue:
+            u = queue.pop(0)
+            for v in adj[u]:
+                if v in visited:
+                    continue
+                visited.add(v)
+                queue.append(v)
+                e = (min(u, v), max(u, v))
+                # s_v = ρ_{v←e}^{-1} · ρ_{u←e} · s_u (both sampled above)
+                rho_v = self.rho[(e, v)]
+                rho_u = self.rho[(e, u)]
+                transfer = Fp.mat_mul(Fp.mat_inv(rho_v), rho_u)
+                R_to[v] = Fp.mat_mul(transfer, R_to[u])
+        return R_to
+
     def _build_coboundary(self):
-        """Build the coboundary operator δ^0: C^0 → C^1."""
         n, m, d = self.graph.n, self.graph.m, self.dv
         self.delta0 = np.zeros((m * d, n * d), dtype=int)
 
@@ -88,11 +158,9 @@ class Sheaf:
         self.delta0 = self.Fp.mat_mod(self.delta0)
 
     def _compute_H0(self):
-        """Compute H^0(G, F) = ker(δ^0) over F_p."""
         self.H0_basis = self.Fp.kernel(self.delta0)
 
     def random_section(self, rng=None) -> np.ndarray:
-        """Sample a random element of H^0(G, F)."""
         r = rng or _random
         s = np.zeros(self.C0_dim, dtype=object)
         for bv in self.H0_basis:
@@ -100,8 +168,7 @@ class Sheaf:
             s = (s + coeff * bv.astype(object)) % self.Fp.p
         return s.astype(int)
 
-    def section_from_coeffs(self, coeffs: list[int]) -> np.ndarray:
-        """Build section from coefficients in the H^0 basis."""
+    def section_from_coeffs(self, coeffs) -> np.ndarray:
         if len(coeffs) != self.H0_dim:
             raise ValueError(
                 f"Need {self.H0_dim} coefficients, got {len(coeffs)}"
@@ -112,54 +179,42 @@ class Sheaf:
         return s.astype(int)
 
     def is_global_section(self, s: np.ndarray) -> bool:
-        """Check s ∈ H^0(G, F), i.e., δ^0(s) = 0."""
         check = self.Fp.mat_mod(
             self.delta0.astype(object) @ s.astype(object).reshape(-1, 1)
         )
         return bool(np.all(check == 0))
 
     def get_node_value(self, s: np.ndarray, v: int) -> np.ndarray:
-        """Extract the fiber value s_v from a global section."""
         return s[v * self.dv : (v + 1) * self.dv].copy()
 
     def set_node_value(self, s: np.ndarray, v: int, val: np.ndarray):
-        """Set the fiber value s_v in a section vector."""
         s[v * self.dv : (v + 1) * self.dv] = val
 
-    def compose_restriction(self, path: list[int]) -> np.ndarray:
-        """
-        Compose restriction maps along a path in the graph.
-
-        For tree graphs, this gives R_{root→v} such that
-        s_v = R_{root→v} · s_root for any global section s.
-        """
+    def compose_restriction(self, path) -> np.ndarray:
         R = np.eye(self.dv, dtype=int)
         for i in range(len(path) - 1):
             u, v = path[i], path[i + 1]
-            # Find the edge
             e = (u, v) if (u, v) in self.graph.edges else (v, u)
-            # δ^0(s)(e) = ρ_{v←e}·s_v - ρ_{u←e}·s_u = 0
-            # With our convention ρ_{u←e}=I: ρ_{v←e}·s_v = s_u
-            # So s_v = ρ_{v←e}^{-1} · s_u
             rho_v = self.rho[(e, v)]
             rho_v_inv = self.Fp.mat_inv(rho_v)
             R = self.Fp.mat_mul(rho_v_inv, R)
         return R
 
-    def tree_propagation_maps(self, root: int = 0) -> dict[int, np.ndarray]:
-        """
-        For tree graphs, compute R_{root→v} for all nodes.
+    def tree_propagation_maps(self, root: int = 0) -> dict:
+        """Compute R_{root→v} for all nodes on a tree (or spanning tree)."""
+        if self.graph.is_tree:
+            tree_edges = self.graph.edges
+        else:
+            tree_edges, _ = self.graph.spanning_tree(root)
 
-        Returns dict mapping node → composed restriction matrix.
-        """
-        if not self.graph.is_tree:
-            raise ValueError("Tree propagation requires a tree graph")
+        adj = {v: [] for v in self.graph.nodes}
+        for u, v in tree_edges:
+            adj[u].append(v)
+            adj[v].append(u)
 
-        adj = self.graph.adjacency_list()
         R_to = {root: np.eye(self.dv, dtype=int)}
         visited = {root}
         queue = [root]
-
         while queue:
             u = queue.pop(0)
             for v in adj[u]:
@@ -167,15 +222,12 @@ class Sheaf:
                     continue
                 visited.add(v)
                 queue.append(v)
-                e = (u, v) if (u, v) in self.graph.edges else (v, u)
+                e = (min(u, v), max(u, v))
                 rho_v = self.rho[(e, v)]
                 rho_u = self.rho[(e, u)]
-                # s_v from s_u: ρ_{v←e}·s_v = ρ_{u←e}·s_u
-                # s_v = ρ_{v←e}^{-1} · ρ_{u←e} · s_u
                 rho_v_inv = self.Fp.mat_inv(rho_v)
                 transfer = self.Fp.mat_mul(rho_v_inv, rho_u)
                 R_to[v] = self.Fp.mat_mul(transfer, R_to[u])
-
         return R_to
 
     def __repr__(self):

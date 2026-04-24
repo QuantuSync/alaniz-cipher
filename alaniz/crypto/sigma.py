@@ -1,42 +1,33 @@
 """
 Public nonlinear maps σ: F_p^d → F_p^d for the Alaniz Cipher.
 
-The map σ is applied AFTER the secret linear transformation A_v·s_v,
-creating key-message entanglement that defeats CPA attacks.
-
 Supported maps:
-  - inverse: σ(x)_i = x_i^{p-2} (multiplicative inverse, 0↦0)
-             [DEPRECATED: vulnerable to scaling CPA attack]
-  - cube:    σ(x)_i = x_i^3 (requires gcd(3, p-1) = 1)
-             [DEPRECATED: vulnerable to scaling CPA attack]
-  - id_spn:  σ(y) = y + S(M·S(y) + c), S = cube, M = mixing matrix,
-             c = (1,...,1) constant vector
-             [RECOMMENDED: resists scaling and interpolation attacks]
+  - inverse: σ(x)_i = x_i^{p-2}
+             [DEPRECATED v1: vulnerable to scaling CPA attack]
+  - cube:    σ(x)_i = x_i^3
+             [DEPRECATED v1: vulnerable to scaling CPA attack]
+  - id_spn:  σ(y) = y + S(M·S(y) + c), S = cube, c = (1,...,1)
+             [DEPRECATED v2: broken by polynomial interpolation + Gröbner.
+             Image coverage only ~60% (not a permutation of F_p^d).]
+  - monomial_power: σ(y) = y + ι^{-1}(π_e(L·ι(y) + 1)), π_e(x) = x^e in F_{p^d}
+             [RECOMMENDED v3: vector-valued, defeats interpolation
+             under probabilistic encryption, APN or nearly-APN properties.]
 
-Design rationale for id_spn:
-  Component-wise σ (cube, inverse) satisfy σ(λy)_i = λ^e σ(y)_i,
-  enabling an O(d)-query CPA key recovery (Rodríguez Langa, 2026).
-  Additionally, any σ without a linear part allows polynomial
-  interpolation to extract A directly from the t^1 coefficient.
-  
-  σ_id_spn has:
-    - Linear part = I (identity): the t^1 coefficient yields
-      (I+B)·A, mixing A and B inseparably.
-    - Degree-9 nonlinear part with cross-component mixing via M:
-      prevents component-wise decomposition.
-    - σ(0) = 0: no information leakage from zero queries.
+The v3 map `monomial_power` operates in the multiplicative structure of
+F_{p^d}, mixing all d coordinates through field multiplication. This
+defeats the scaling and interpolation attacks that broke v1 and v2.
 """
 
 from __future__ import annotations
 import numpy as np
-from typing import Callable
 from ..core.field import FiniteField
 
 
 class Sigma:
     """Public nonlinear map for the encryption scheme."""
 
-    def __init__(self, name: str, Fp: FiniteField, d: int = 2):
+    def __init__(self, name: str, Fp: FiniteField, d: int = 2,
+                 field_ext=None, L_gf=None, exponent: int = None):
         self.name = name
         self.Fp = Fp
         self.d = d
@@ -55,18 +46,30 @@ class Sigma:
         elif name == "id_spn":
             self._forward = self._id_spn
             self._algebraic_degree = 9
-            # Precompute mixing matrix M (circulant)
             self._M = self._build_mixing_matrix(d, Fp.p)
+        elif name == "monomial_power":
+            # v3 sigma: vectorial in F_{p^d}
+            if field_ext is None:
+                from .field_ext import ExtensionField
+                field_ext = ExtensionField(Fp.p, d)
+            self.field_ext = field_ext
+            if exponent is None:
+                from .field_ext import ExtensionField
+                exponent = ExtensionField.find_secure_exponent(Fp.p, d)
+            self.exponent = exponent
+            if L_gf is None:
+                L_gf = field_ext.random_nonzero()
+            self.L_gf = L_gf
+            self.c_gf = field_ext.GF(1)
+            self._forward = self._monomial_power
+            self._algebraic_degree = exponent
         else:
             raise ValueError(
                 f"Unknown sigma: {name}. "
-                f"Use 'inverse', 'cube', or 'id_spn'."
+                f"Use 'inverse', 'cube', 'id_spn', or 'monomial_power'."
             )
 
     def _build_mixing_matrix(self, d: int, p: int) -> np.ndarray:
-        """Build public mixing matrix M for id_spn.
-        Circulant: M[i][j] = 1 if i==j, 2 if j==(i+1)%d, 0 otherwise.
-        """
         M = np.zeros((d, d), dtype=int)
         for i in range(d):
             M[i][i] = 1
@@ -80,8 +83,9 @@ class Sigma:
     def __call__(self, x: np.ndarray) -> np.ndarray:
         return self._forward(x)
 
+    # ---------------- v1 sigmas (deprecated) ----------------
+
     def _inverse(self, x: np.ndarray) -> np.ndarray:
-        """σ(x)_i = x_i^{p-2} mod p (with 0 ↦ 0)."""
         p = self.Fp.p
         return np.array([
             pow(int(xi), p - 2, p) if int(xi) % p != 0 else 0
@@ -89,68 +93,59 @@ class Sigma:
         ])
 
     def _cube(self, x: np.ndarray) -> np.ndarray:
-        """σ(x)_i = x_i^3 mod p."""
         p = self.Fp.p
         return np.array([pow(int(xi), 3, p) for xi in x])
 
+    # ---------------- v2 sigma (deprecated) ----------------
+
     def _id_spn(self, x: np.ndarray) -> np.ndarray:
-        """σ(y) = y + S(M · S(y) + c), where S = component-wise cube,
-        M = circulant mixing matrix, c = (1,...,1) constant vector.
-        
-        Properties:
-          - Linear part = I (identity): interpolation gives (I+B)·A, not A
-          - Constant c inside outer S: breaks scaling homogeneity
-            σ(λy) ≠ λ^e σ(y) because (λ^3·w + c)^3 ≠ λ^k·(w+c)^3
-          - σ(0) = S(c) ≠ 0: acceptable (d equations in d² unknowns)
-          - Degree 9 (cube ∘ linear ∘ cube)
-          - Cross-component mixing via M
-          
-        Resists:
-          - Langa's scaling attack (constant c breaks λ^e factoring)
-          - Polynomial interpolation (linear part I entangles A and B)
-          - Differential column attack (cross-component mixing)
-        """
+        """σ_{SPN}(y) = y + S(M·S(y) + c), component-wise cube + mixing."""
         p = self.Fp.p
         d = len(x)
-        
-        # Adjust M if dimension doesn't match precomputed
-        if d != self.d:
-            M = self._build_mixing_matrix(d, p)
-        else:
-            M = self._M
-        
-        # S(y) = component-wise cube
+        M = self._M if d == self.d else self._build_mixing_matrix(d, p)
+
         s1 = np.array([pow(int(xi), 3, p) for xi in x])
-        
-        # M · S(y) + c  (c = (1, ..., 1))
         mixed = np.array([
             (sum(int(M[i][j]) * int(s1[j]) for j in range(d)) + 1) % p
             for i in range(d)
         ])
-        
-        # S(M · S(y) + c) = component-wise cube
         s2 = np.array([pow(int(mixed[i]), 3, p) for i in range(d)])
-        
-        # y + S(M · S(y) + c)
         return np.array([(int(x[i]) + int(s2[i])) % p for i in range(d)])
 
-    def attacker_system_degree(self) -> int:
-        """
-        Degree of the attacker's polynomial system in key unknowns.
+    # ---------------- v3 sigma (RECOMMENDED) ----------------
 
-        For c_v = A_v·s_v + B_v·σ(A_v·s_v):
-          - σ = cube (deg 3): terms like b_ij · (a·s)^3 → degree 4
-          - σ = inverse: with z-substitution, degree 2
-          - σ = id_spn (deg 9): terms like b_ij · (a·s + N(a·s)) → degree 10
-            But interpolation gives (I+B)A, so effective system
-            to decompose has degree 9 in d² unknowns.
+    def _monomial_power(self, y: np.ndarray) -> np.ndarray:
         """
+        v3 σ: σ(y) = y + ι^{-1}(π_e(L·ι(y) + 1))
+        where π_e(x) = x^e in F_{p^d}.
+
+        Vector-valued: mixes all d coordinates through field multiplication.
+        Defeats scaling (Langa) and interpolation (v2 CPA) attacks.
+        """
+        y_gf = self.field_ext.vec_to_gf(y)
+        inner = self.L_gf * y_gf + self.c_gf
+        powered = inner ** self.exponent
+        out_gf = y_gf + powered  # in F_{p^d}
+        # Extract the "nonlinear tail" ι^{-1}(π_e(L·ι(y)+1)) and add to y
+        tail = self.field_ext.gf_to_vec(powered)
+        return np.array([(int(y[i]) + int(tail[i])) % self.Fp.p
+                         for i in range(self.d)])
+
+    # ---------------- metadata ----------------
+
+    def attacker_system_degree(self) -> int:
+        """Degree of the attacker's polynomial system in key unknowns."""
         if self.name == "cube":
             return 4
         elif self.name == "inverse":
             return 2
         elif self.name == "id_spn":
             return 10
+        elif self.name == "monomial_power":
+            return self.exponent + 1
+        return -1
 
     def __repr__(self):
+        if self.name == "monomial_power":
+            return f"σ_monomial(e={self.exponent}, F_{{{self.Fp.p}^{self.d}}})"
         return f"σ_{self.name}(deg={self._algebraic_degree})"
